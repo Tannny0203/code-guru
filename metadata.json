@@ -1,0 +1,5 @@
+{
+  "name": "CodeGuru",
+  "description": "A personalized AI mentor that analyzes your code, remembers your past mistakes using Hindsight, and provides tailored feedback.",
+  "requestFramePermissions": []
+}
