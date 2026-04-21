@@ -6,12 +6,11 @@ import { authMiddleware } from "../middleware/auth.ts";
 const router = Router();
 router.use(authMiddleware);
 
-// Models to try in order when quota is hit
+// Free tier models as of 2026 (only Gemini 2.5 family is available on free tier)
 const MODELS = [
   "gemini-2.5-flash",
-  "gemini-2.0-flash",
-  "gemini-2.0-flash-lite",
-  "gemini-1.5-pro-latest",
+  "gemini-2.5-flash-lite-preview-06-17",
+  "gemini-2.5-pro",
 ];
 
 function getAI() {
@@ -20,7 +19,7 @@ function getAI() {
   return new GoogleGenAI({ apiKey: key });
 }
 
-// Try each model in order, skip on 429
+// Try each model in order, retrying on any API/availability error
 async function generateWithFallback(ai: GoogleGenAI, contents: string, systemInstruction: string): Promise<string> {
   let lastError: any;
   for (const model of MODELS) {
@@ -33,15 +32,41 @@ async function generateWithFallback(ai: GoogleGenAI, contents: string, systemIns
       console.log(`[gemini] Used model: ${model}`);
       return response.text ?? "No feedback generated.";
     } catch (err: any) {
-      if (err?.status === 429 || err?.message?.includes("429") || err?.message?.includes("quota") || err?.message?.includes("RESOURCE_EXHAUSTED")) {
-        console.warn(`[gemini] ${model} quota exceeded, trying next model...`);
-        lastError = err;
+      const status = err?.status ?? err?.code ?? 0;
+      const msg = (err?.message ?? "").toLowerCase();
+
+      // Always skip to next model on these HTTP statuses
+      const isRetryable =
+        status === 429 ||
+        status === 503 ||
+        status === 503 ||
+        status === 500 ||
+        status === 404 ||
+        msg.includes("429") ||
+        msg.includes("503") ||
+        msg.includes("404") ||
+        msg.includes("quota") ||
+        msg.includes("resource_exhausted") ||
+        msg.includes("unavailable") ||
+        msg.includes("not found") ||
+        msg.includes("not_found") ||
+        msg.includes("high demand") ||
+        msg.includes("overloaded");
+
+      console.warn(`[gemini] ${model} failed (status=${status}): ${err?.message?.slice(0, 120)}`);
+      lastError = err;
+
+      if (isRetryable) {
+        await new Promise(r => setTimeout(r, 500));
         continue;
       }
-      throw err; // non-quota error — throw immediately
+
+      // For unknown errors, still try next model instead of hard crashing
+      console.warn(`[gemini] Unknown error on ${model}, trying next anyway...`);
+      await new Promise(r => setTimeout(r, 500));
     }
   }
-  throw new Error(`All models quota exceeded. Please try again later or generate a new API key at https://aistudio.google.com/app/apikey\n\nLast error: ${lastError?.message}`);
+  throw new Error(`All Gemini models failed. Please try again later.\n\nLast error: ${lastError?.message}`);
 }
 
 function detectLanguage(code: string): string {
